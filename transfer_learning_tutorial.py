@@ -81,7 +81,7 @@ data_transforms = {
     ]),
 }
 
-data_dir = 'data/RSNA_COVID_512'
+data_dir = 'datasets/hymenoptera_data'
 image_datasets = {x: datasets.ImageFolder(os.path.join(data_dir, x),
                                           data_transforms[x])
                   for x in ['train', 'val']}
