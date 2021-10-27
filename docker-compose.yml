@@ -1,33 +1,13 @@
 version: '3.8'
 
 services:
-  torch-native:
-    container_name: torch-native
-    hostname: torch-native
-    image: loopbackkr/pytorch:1.8.1-cuda11.1-cudnn8
-    tty: true
-    stdin_open: true
-    deploy:
-      resources:
-        reservations:
-          devices:
-          - driver: nvidia
-            count: all
-            # device_ids: ['0']
-            capabilities: [gpu]
-    privileged: true
-    shm_size: 64g
-    volumes:
-    environment:
-      - TZ=Asia/Seoul
-      - LC_ALL=C.UTF-8
-      - LANG=C.UTF-8
   torch-horovod:
     container_name: torch-horovod
     hostname: torch-horovod
     image: horovod/horovod:latest
     tty: true
     stdin_open: true
+    network: host
     deploy:
       resources:
         reservations:
@@ -39,6 +19,8 @@ services:
     privileged: true
     shm_size: 64g
     volumes:
+      - /root/.ssh:/root/.ssh
+      - /root/projects/hello-horovod:/root/workspace
     environment:
       - TZ=Asia/Seoul
       - DISPLAY=<YOUR-X-SERVER-ADDRESS>:0
