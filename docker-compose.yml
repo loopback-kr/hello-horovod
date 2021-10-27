@@ -7,7 +7,7 @@ services:
     image: horovod/horovod:latest
     tty: true
     stdin_open: true
-    network: host
+    network_mode: host
     deploy:
       resources:
         reservations:
