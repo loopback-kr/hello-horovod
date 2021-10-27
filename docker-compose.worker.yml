@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  horovod-slaves:
+    container_name: horovod-slaves
+    hostname: horovod-slaves
+    image: horovod/horovod:latest
+    tty: true
+    stdin_open: true
+    network_mode: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            count: all
+            # device_ids: ['0']
+            capabilities: [gpu]
+    shm_size: 64g
+    volumes:
+      - /root/.ssh:/root/.ssh
+      - <YOUR-SOURCE-PATH>:/root/workspace
+    environment:
+      - TZ=Asia/Seoul
+      - LC_ALL=C.UTF-8
+      - LANG=C.UTF-8
+      # - DISPLAY=<YOUR-X-SERVER-ADDRESS>:0
+    command: bash -c '/usr/sbin/sshd -p 12345; sleep infinity'
