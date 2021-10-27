@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  torch:
+    container_name: hello-horovod
+    hostname: hello-horovod
+    image: loopbackkr/pytorch:1.8.1-cuda11.1-cudnn8
+    tty: true
+    stdin_open: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+          - driver: nvidia
+            count: all
+            # device_ids: ['0']
+            capabilities: [gpu]
+    privileged: true
+    shm_size: 64g
+    volumes:
+      - <CURRENT-PROJECT-PATH>:/root/workspace
+    environment:
+      - TZ=Asia/Seoul
+      - DISPLAY=<YOUR-X-SERVER-ADDRESS>:0
+      - LC_ALL=C.UTF-8
+      - LANG=C.UTF-8
