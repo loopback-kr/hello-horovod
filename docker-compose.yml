@@ -20,6 +20,7 @@ services:
     volumes:
       - /root/.ssh:/root/.ssh
       - <YOUR-SOURCE-PATH>:/root/workspace
+    working_dir: /root/workspace
     environment:
       - TZ=Asia/Seoul
       - LC_ALL=C.UTF-8
