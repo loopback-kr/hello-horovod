@@ -40,6 +40,13 @@ import matplotlib.pyplot as plt
 import time
 import os
 import copy
+# Horovod: import horovod for PyTorch
+import horovod.torch as hvd
+import torch.multiprocessing as mp
+from filelock import FileLock
+
+# Horovod: initialize library.
+hvd.init()
 
 # plt.ion()   # interactive mode
 
@@ -81,17 +88,43 @@ data_transforms = {
     ]),
 }
 
-data_dir = 'datasets/hymenoptera_data'
-image_datasets = {x: datasets.ImageFolder(os.path.join(data_dir, x),
-                                          data_transforms[x])
-                  for x in ['train', 'val']}
-dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=4,
-                                             shuffle=True, num_workers=4)
-              for x in ['train', 'val']}
-dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
-class_names = image_datasets['train'].classes
+
+
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+# Horovod: pin GPU to local rank.
+if torch.cuda.is_available():
+    torch.cuda.set_device(hvd.local_rank())
+    # torch.cuda.manual_seed(args.seed)
+
+# Horovod: limit # of CPU threads to be used per worker.
+torch.set_num_threads(1)
+
+kwargs = {'num_workers': 1, 'pin_memory': True}# if args.cuda else {}
+# When supported, use 'forkserver' to spawn dataloader workers instead of 'fork' to prevent
+# issues with Infiniband implementations that are not fork-safe
+if (kwargs.get('num_workers', 0) > 0 and hasattr(mp, '_supports_context') and
+        mp._supports_context and 'forkserver' in mp.get_all_start_methods()):
+    kwargs['multiprocessing_context'] = 'forkserver'
+
+data_dir = 'data/hymenoptera_data'#args.data_dir or './data'
+with FileLock(os.path.expanduser("~/.horovod_lock")):
+    data_dir = 'data/hymenoptera_data'
+    # NOTE: no need to create test datasets in here FileLock
+    image_datasets = \
+        {x: datasets.ImageFolder(os.path.join(data_dir, x), data_transforms[x]) for x in ['train', 'val']}
+
+# Horovod: use DistributedSampler to partition the training, test data among workers
+data_samplers = {x: \
+    torch.utils.data.distributed.DistributedSampler(
+        image_datasets[x], num_replicas=hvd.size(), rank=hvd.rank())
+    for x in ['train', 'val']}
+
+data_loaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=4, sampler=data_samplers[x], **kwargs) for x in ['train', 'val']}
+
+dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'val']}
+class_names = image_datasets['train'].classes
 
 ######################################################################
 # Visualize a few images
@@ -134,6 +167,10 @@ def imshow(inp, title=None):
 # In the following, parameter ``scheduler`` is an LR scheduler object from
 # ``torch.optim.lr_scheduler``.
 
+def metric_average(val, name):
+    tensor = torch.tensor(val)
+    avg_tensor = hvd.allreduce(tensor, name=name)
+    return avg_tensor.item()
 
 def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
     since = time.time()
@@ -141,14 +178,21 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
     best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
 
+    #if args.use_mixed_precision:
+        # Initialize scaler in global scale
+        #scaler = torch.cuda.amp.GradScaler()
+
     for epoch in range(num_epochs):
-        print('Epoch {}/{}'.format(epoch, num_epochs - 1))
-        print('-' * 10)
+        print('Epoch {:2d}/{:2d}'.format(epoch, num_epochs - 1), end=', ')
+        # print('-' * 10)
 
         # Each epoch has a training and validation phase
         for phase in ['train', 'val']:
             if phase == 'train':
                 model.train()  # Set model to training mode
+                
+                # Horovod: set epoch to sampler for shuffling.
+                data_samplers['train'].set_epoch(epoch)
             else:
                 model.eval()   # Set model to evaluate mode
 
@@ -156,9 +200,9 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
             running_corrects = 0
 
             # Iterate over data.
-            for inputs, labels in dataloaders[phase]:
-                inputs = inputs.to(device)
-                labels = labels.to(device)
+            for inputs, labels in data_loaders[phase]:
+                inputs = inputs.cuda() #to(device)
+                labels = labels.cuda() #to(device)
 
                 # zero the parameter gradients
                 optimizer.zero_grad()
@@ -175,17 +219,33 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
                         loss.backward()
                         optimizer.step()
 
-                # statistics
-                running_loss += loss.item() * inputs.size(0)
-                running_corrects += torch.sum(preds == labels.data)
+                if phase == 'train':
+                    # statistics
+                    running_loss += loss.item() * inputs.size(0)
+                    running_corrects += torch.sum(preds == labels.data)
+                else:
+                    # Horovod: use test_sampler to determine the number of examples in
+                    # this worker's partition.
+                    running_loss /= len(data_samplers['val'])
+                    running_corrects /= len(data_samplers['val'])
+
+                    # Horovod: average metric values across workers.
+                    running_loss = metric_average(running_loss, 'avg_loss')
+                    running_corrects = metric_average(running_corrects, 'avg_accuracy')
+
+                    # Horovod: print output only on first rank.
+                    # if hvd.rank() == 0:
+                    #     print('\nTest set: Average loss: {:.4f}, Accuracy: {:.2f}%\n'.format(
+                    #         running_loss, 100. * running_corrects))
+
+
             if phase == 'train':
                 scheduler.step()
 
             epoch_loss = running_loss / dataset_sizes[phase]
-            epoch_acc = running_corrects.double() / dataset_sizes[phase]
+            epoch_acc = running_corrects / dataset_sizes[phase]
 
-            print('{} Loss: {:.4f} Acc: {:.4f}'.format(
-                phase, epoch_loss, epoch_acc))
+            print('{} Loss: {:.4f} Acc: {:.4f}'.format(phase, epoch_loss, epoch_acc), end=', ' if phase =='train' else '')
 
             # deep copy the model
             if phase == 'val' and epoch_acc > best_acc:
@@ -197,7 +257,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
     time_elapsed = time.time() - since
     print('Training complete in {:.0f}m {:.0f}s'.format(
         time_elapsed // 60, time_elapsed % 60))
-    print('Best val Acc: {:4f}'.format(best_acc))
+    print('Best val Acc: {:4f}\n\n'.format(best_acc))
 
     # load best model weights
     model.load_state_dict(best_model_wts)
@@ -218,9 +278,9 @@ def visualize_model(model, num_images=6):
     # fig = plt.figure()
 
     with torch.no_grad():
-        for i, (inputs, labels) in enumerate(dataloaders['val']):
-            inputs = inputs.to(device)
-            labels = labels.to(device)
+        for i, (inputs, labels) in enumerate(data_loaders['val']):
+            inputs = inputs.cuda() #to(device)
+            labels = labels.cuda() #to(device)
 
             outputs = model(inputs)
             _, preds = torch.max(outputs, 1)
@@ -250,12 +310,35 @@ num_ftrs = model_ft.fc.in_features
 # Alternatively, it can be generalized to nn.Linear(num_ftrs, len(class_names)).
 model_ft.fc = nn.Linear(num_ftrs, 2)
 
-model_ft = model_ft.to(device)
+# horovod: move model to GPU
+# model_ft = model_ft.to(device)
+model_ft = model_ft.cuda()
+# If using GPU Adasum allreduce, scale learning rate by local_size.
+# if args.use_adasum and hvd.nccl_built():
+if hvd.nccl_built():
+    lr_scaler = hvd.local_size()
 
 criterion = nn.CrossEntropyLoss()
 
+# Horovod: scale learning rate by lr_scaler.
 # Observe that all parameters are being optimized
-optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
+# optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001, momentum=0.9)
+optimizer_ft = optim.SGD(model_ft.parameters(), lr=0.001 * lr_scaler, momentum=0.9)
+
+# Horovod: broadcast parameters & optimizer state.
+hvd.broadcast_parameters(model_ft.state_dict(), root_rank=0)
+hvd.broadcast_optimizer_state(optimizer_ft, root_rank=0)
+
+# Horovod: (optional) compression algorithm.
+# compression = hvd.Compression.fp16 if args.fp16_allreduce else hvd.Compression.none
+
+# Horovod: wrap optimizer with DistributedOptimizer.
+optimizer_ft = hvd.DistributedOptimizer(optimizer_ft,
+                                        named_parameters=model_ft.named_parameters(),
+                                        compression=None,
+                                        op=hvd.Average)
+
+
 
 # Decay LR by a factor of 0.1 every 7 epochs
 exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
@@ -297,7 +380,7 @@ for param in model_conv.parameters():
 num_ftrs = model_conv.fc.in_features
 model_conv.fc = nn.Linear(num_ftrs, 2)
 
-model_conv = model_conv.to(device)
+model_conv = model_conv.cuda() #to(device)
 
 criterion = nn.CrossEntropyLoss()
 
