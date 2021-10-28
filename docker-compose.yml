@@ -25,4 +25,8 @@ services:
       - LC_ALL=C.UTF-8
       - LANG=C.UTF-8
       # - DISPLAY=<YOUR-X-SERVER-ADDRESS>:0
+<<<<<<< HEAD
     command: horovodrun -i /root/.ssh/<RSA-PUBLIC-KEY-PATH> -np <NUM-PROCESSORS> -H <NODE-NUM>:<PROC-SLOTS>[, <NODE-NUM>:<PROC-SLOTS>, ...] -p <SSH-PORT> --network-interface <NIC-NAME> python <SOURCE-FILE-PATH>
+=======
+    command: horovodrun -i /root/.ssh/<RSA-PUBLIC-KEY-PATH> -np <NUM-PROCESSORS> -H <NODE-NUM>:<PROC-COUNT>[, <NODE-NUM>:<PROC-COUNT>, ...] -p <SSH-PORT> --network-interface <NIC-NAME> python <SOURCE-FILE-PATH>
+>>>>>>> 4522aa83c3b586803e3b158ec5ec2270974e8de6
