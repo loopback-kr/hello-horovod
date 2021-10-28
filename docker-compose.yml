@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  torch-horovod:
-    container_name: torch-horovod
-    hostname: torch-horovod
+  horovod-master:
+    container_name: horovod-master
+    hostname: horovod-master
     image: horovod/horovod:latest
     tty: true
     stdin_open: true
@@ -16,13 +16,13 @@ services:
             count: all
             # device_ids: ['0']
             capabilities: [gpu]
-    privileged: true
     shm_size: 64g
     volumes:
       - /root/.ssh:/root/.ssh
-      - /root/projects/hello-horovod:/root/workspace
+      - <YOUR-SOURCE-PATH>:/root/workspace
     environment:
       - TZ=Asia/Seoul
-      - DISPLAY=<YOUR-X-SERVER-ADDRESS>:0
       - LC_ALL=C.UTF-8
       - LANG=C.UTF-8
+      # - DISPLAY=<YOUR-X-SERVER-ADDRESS>:0
+    command: horovodrun -i /root/.ssh/<RSA-PUBLIC-KEY-PATH> -np <NUM-PROCESSORS> -H <NODE-NUM>:<PROC-SLOTS>[, <NODE-NUM>:<PROC-SLOTS>, ...] -p <SSH-PORT> --network-interface <NIC-NAME> python <SOURCE-FILE-PATH>
