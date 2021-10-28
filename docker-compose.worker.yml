@@ -24,5 +24,4 @@ services:
       - TZ=Asia/Seoul
       - LC_ALL=C.UTF-8
       - LANG=C.UTF-8
-      # - DISPLAY=<YOUR-X-SERVER-ADDRESS>:0
-    command: bash -c '/usr/sbin/sshd -p 12345; sleep infinity'
+    command: bash -c '/usr/sbin/sshd -p <SSH-PORT>; sleep infinity'
