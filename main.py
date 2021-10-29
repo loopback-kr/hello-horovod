@@ -7,9 +7,8 @@ import torch.nn as nn
 import torch.optim as optim
 #import matplotlib.pyplot as plt
 # import horovod for PyTorch and dependencies
-import horovod.torch as hvd
+import horovod.torch as hvd, distutils.version
 import torch.multiprocessing as mp
-from distutils.version import LooseVersion
 # import utility
 from utility.preloader import load_dataset, get_model
 
@@ -31,6 +30,7 @@ parser.add_argument('--momentum', type=float,                       default=0.5,
 parser.add_argument('--train_batch_size', type=int,                 default=64, metavar='N', help='input batch size for training')
 parser.add_argument('--weight_decay', type=float,                   default=0.0, help='weight decay')
 parser.add_argument('--use_adasum', action='store_true',            default=False, help='use adasum algorithm to do reduction')
+parser.add_argument('--calc_train_metric', type=bool,               default=False, help='')
 # Testing settings
 parser.add_argument('--val_batch_size', type=int,                   default=1000, metavar='N', help='input batch size for testing valiation')
 # Horovod settings
@@ -76,20 +76,20 @@ def validate():
 
     # Horovod: print output only on first rank.
     if hvd.rank() == 0:
-        print(f'val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}', end=', ')
+        print(f'Val-Acc: {val_acc:.4f}, Val-Loss: {val_loss:.4f}', end=', ')
 
     # epoch_loss = test_loss / dataset_size['val']
     # epoch_acc = test_acc / dataset_size['val']
 
     # print('{} Loss: {:.4f} Acc: {:.4f}'.format('val', epoch_loss, epoch_acc), end='')
 
-    return val_acc
+    return val_loss, val_acc
     # deep copy the model
     # if epoch_acc > best_acc:
     #     best_acc = epoch_acc
         # best_model_wts = copy.deepcopy(model.state_dict())
 
-def train(epoch):
+def train(epoch, calc_train_metric=True):
     model.train()  # Set model to training mode
     # Horovod: set epoch to sampler for shuffling.
     samplers['train'].set_epoch(epoch)
@@ -118,17 +118,18 @@ def train(epoch):
     
     # exp_lr_scheduler.step()
 
-    # Horovod: use test_sampler to determine the number of examples in
-    # this worker's partition.
-    epoch_loss = train_loss / len(samplers['train'])
-    epoch_acc = train_acc / len(samplers['train'])
+    if calc_train_metric:
+        # Horovod: use test_sampler to determine the number of examples in
+        # this worker's partition.
+        train_loss /= len(samplers['train'])
+        train_acc /= len(samplers['train'])
 
-    # Horovod: average metric values across workers.
-    epoch_loss = metric_average(epoch_loss, 'avg_loss')
-    epoch_acc = metric_average(epoch_acc, 'avg_accuracy')
+        # Horovod: average metric values across workers.
+        train_loss = metric_average(train_loss, 'avg_loss')
+        train_acc = metric_average(train_acc, 'avg_accuracy')
 
-    # Horovod: print output only on first rank.
-    print(f'train Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}', end=', ')
+        # Horovod: print output only on first rank.
+        print(f'Train-Acc: {train_acc:.4f}, Train-Loss: {train_loss:.4f}', end=', ')
             
         
     # print('{} Loss: {:.4f} Acc: {:.4f}'.format('train', epoch_loss, epoch_acc), end=', ')
@@ -192,7 +193,7 @@ if __name__ == '__main__':
         if args.use_mixed_precision:
             raise ValueError('Mixed precision is only supported with cuda enabled.')
 
-    if args.use_mixed_precision and LooseVersion(torch.__version__) < LooseVersion('1.6.0'):
+    if args.use_mixed_precision and distutils.version.LooseVersion(torch.__version__) < distutils.version.LooseVersion('1.6.0'):
         raise ValueError('Mixed precision is using torch.cuda.amp.autocast(), which requires torch >= 1.6.0')
 
     # Restrict randomness
@@ -206,8 +207,6 @@ if __name__ == '__main__':
             torch.backends.cudnn.benchmark = False
             torch.backends.cudnn.deterministic = args.cudnn_deterministic
     
-    # TODO check point with hvd
-
     # Load datasets
     dsets = load_dataset(args.dataset)
     if args.use_hvd:
@@ -219,6 +218,7 @@ if __name__ == '__main__':
         # Horovod: use DistributedSampler to partition the training, test data among workers
         samplers = {x: torch.utils.data.distributed.DistributedSampler(dsets[x], num_replicas=hvd.size(), rank=hvd.rank()) for x in ['train', 'val']}
         loader = {x: torch.utils.data.DataLoader(dsets[x], batch_size=size, sampler=samplers[x], **kwargs) for x, size in zip(['train', 'val'], [args.train_batch_size, args.val_batch_size])}
+        # TODO testloader도 구현되는 ㄱ게 맞는지 확인
     else:
         loader = {x: torch.utils.data.DataLoader(dsets[x], batch_size=size) for x, size in zip(['train', 'val'], [args.train_batch_size, args.val_batch_size])}
     
@@ -278,7 +278,7 @@ if __name__ == '__main__':
 
     # criterion = nn.CrossEntropyLoss()
     # best_model_wts = copy.deepcopy(model.state_dict())
-    best_acc = 0.0
+    best_loss = 0.0; best_acc = 0.0
 
     # for epoch in range(resume_from_epoch, args.epochs):
     train_time = time()
@@ -301,20 +301,21 @@ if __name__ == '__main__':
             #model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler, num_epochs=25)
             #visualize_model(model_ft)
 
-            train(epoch)
+            train(epoch, calc_train_metric=args.calc_train_metric)
         # Keep test in full precision since computation is relatively light.
         # test(epoch)
-        epoch_acc = validate()
-        if epoch_acc > best_acc:
-            best_acc = epoch_acc
+        val_loss, val_acc = validate()
+        if val_acc > best_acc:
+            best_acc = val_acc
+            best_loss = val_loss
+        
         # save_checkpoint(epoch)
         if hvd.rank() == 0:
             print(f'Time: {(time() - epoch_time) % 60:02.04f}')
     
     if hvd.rank() == 0:
         train_elapsed = time() - train_time
-        print(f'Training complete in {train_elapsed // 60:02.0f}m {train_elapsed % 60:02.04f}s')
-        print(f'Best val Acc: {best_acc:4f}\n\n')
+        print(f'Training complete in {train_elapsed // 60:02.0f}m {train_elapsed % 60:02.04f}s, Best Val-Acc: {best_acc:.4f}, Val-Loss: {best_loss:.4f}')
 
 
 # ######################################################################
