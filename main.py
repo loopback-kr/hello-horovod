@@ -232,9 +232,9 @@ if __name__ == '__main__':
 
     lr_scaler = 1
     if args.use_hvd:
-    # By default, Adasum doesn't need scaling up learning rate.
-    # For sum/average with gradient Accumulation: scale learning rate by batches_per_allreduce
-    lr_scaler = args.batches_per_allreduce * hvd.size() if not args.use_adasum else 1
+        # By default, Adasum doesn't need scaling up learning rate.
+        # For sum/average with gradient Accumulation: scale learning rate by batches_per_allreduce
+        lr_scaler = args.batches_per_allreduce * hvd.size() if not args.use_adasum else 1
 
         # If using GPU Adasum allreduce, scale learning rate by local_size.
         if args.use_adasum and hvd.nccl_built():
