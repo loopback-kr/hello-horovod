@@ -1,10 +1,11 @@
 from __future__ import print_function, division
-import argparse, numpy as np, time, os, copy, random
+import argparse, numpy as np, os, copy, random
+from time import time
 # import PyTorch and dependencies
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 # import horovod for PyTorch and dependencies
 import horovod.torch as hvd
 import torch.multiprocessing as mp
@@ -66,15 +67,16 @@ def validate():
 
     # Horovod: use test_sampler to determine the number of examples in
     # this worker's partition.
-    epoch_loss = val_loss / len(samplers['val'])
-    epoch_acc = val_acc / len(samplers['val'])
+    val_loss /= len(samplers['val'])
+    val_acc /= len(samplers['val'])
 
     # Horovod: average metric values across workers.
-    epoch_loss = metric_average(epoch_loss, 'avg_loss')
-    epoch_acc = metric_average(epoch_acc, 'avg_accuracy')
+    val_loss = metric_average(val_loss, 'avg_loss')
+    val_acc = metric_average(val_acc, 'avg_accuracy')
 
     # Horovod: print output only on first rank.
-    print(f'val Loss: {epoch_loss:.4f}, Acc: {epoch_acc:.4f}', end=', ')
+    if hvd.rank() == 0:
+        print(f'val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}', end=', ')
 
     # epoch_loss = test_loss / dataset_size['val']
     # epoch_acc = test_acc / dataset_size['val']
@@ -178,6 +180,9 @@ if __name__ == '__main__':
             raise ValueError('The device is not set to CUDA.')
 
     # Initalize horovod
+    # With the typical setup of one GPU per process, set this to local rank.
+    # The first process on the server will be allocated the first GPU,
+    # the second process will be allocated the second GPU, and so forth.
     if args.use_hvd:
         hvd.init() # initialize horovod
         torch.cuda.set_device(hvd.local_rank()) # pin GPU to local rank.
@@ -219,33 +224,33 @@ if __name__ == '__main__':
 
     dataset_sizes = {x: len(dsets[x]) for x in ['train', 'val']}
     class_names = dsets['train'].classes # To define the number of outputs in FC-layers
+    
+    # Load the model
     model = get_model(args.model, len(class_names))
+    if args.dev == 'cuda':
+        model = model.to(args.device) # horovod: move model to GPU
 
+    lr_scaler = 1
+    if args.use_hvd:
     # By default, Adasum doesn't need scaling up learning rate.
     # For sum/average with gradient Accumulation: scale learning rate by batches_per_allreduce
     lr_scaler = args.batches_per_allreduce * hvd.size() if not args.use_adasum else 1
 
-    if args.dev == 'cuda':
-        # horovod: move model to GPU
-        model = model.to(args.device)
         # If using GPU Adasum allreduce, scale learning rate by local_size.
-        if args.use_hvd and args.use_adasum and hvd.nccl_built():
+        if args.use_adasum and hvd.nccl_built():
             lr_scaler = args.batches_per_allreduce * hvd.local_size()
     
-    # Horovod: scale learning rate by lr_scaler.
-    # optimizer = optim.SGD(model_ft.parameters(), lr=args.lr * lr_scaler, momentum=args.momentum)
-
     # Horovod: scale learning rate by the number of GPUs.
+    # Effective batch size in synchronous distributed training is scaled by the number of workers.
+    # An increase in learning rate compensates for the increased batch size.
     optimizer = optim.SGD(model.parameters(), lr=(args.base_lr * lr_scaler), momentum=args.momentum, weight_decay=args.weight_decay)
 
     # Decay LR by a factor of 0.1 every 7 epochs
     # exp_lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
 
-    # Horovod: broadcast parameters & optimizer state.
-    hvd.broadcast_parameters(model.state_dict(), root_rank=0)
-    hvd.broadcast_optimizer_state(optimizer, root_rank=0)
-
     # Horovod: wrap optimizer with DistributedOptimizer.
+    # The distributed optimizer delegates gradient computation to the original optimizer,
+    # averages gradients using allreduce or allgather, and then applies those averaged gradients.
     optimizer = hvd.DistributedOptimizer(
         optimizer, named_parameters=model.named_parameters(),
         compression=hvd.Compression.fp16 if args.fp16_allreduce else hvd.Compression.none,
@@ -253,6 +258,12 @@ if __name__ == '__main__':
         op=hvd.Adasum if args.use_adasum else hvd.Average,
         gradient_predivide_factor=args.gradient_predivide_factor)
 
+    # Horovod: broadcast parameters & optimizer state from rank 0 to all other processes.
+    # This is necessary to ensure consistent initialization of all workers
+    # when training is started with random weights or restored from a checkpoint.
+    hvd.broadcast_parameters(model.state_dict(), root_rank=0)
+    hvd.broadcast_optimizer_state(optimizer, root_rank=0)
+    
     # # Restore from a previous checkpoint, if initial_epoch is specified.
     # # Horovod: restore on the first worker which will broadcast weights to other workers.
     # if resume_from_epoch > 0 and hvd.rank() == 0:
@@ -261,19 +272,20 @@ if __name__ == '__main__':
     #     model_ft.load_state_dict(checkpoint['model'])
     #     optimizer.load_state_dict(checkpoint['optimizer'])
 
-    if args.use_mixed_precision:
+    # if args.use_mixed_precision:
         # Initialize scaler in global scale
-        scaler = torch.cuda.amp.GradScaler()
+        # scaler = torch.cuda.amp.GradScaler()
 
-    criterion = nn.CrossEntropyLoss()
-    best_model_wts = copy.deepcopy(model.state_dict())
+    # criterion = nn.CrossEntropyLoss()
+    # best_model_wts = copy.deepcopy(model.state_dict())
     best_acc = 0.0
 
     # for epoch in range(resume_from_epoch, args.epochs):
-    time_start_train = time.time()
+    train_time = time()
     for epoch in range(1, args.epochs+1):
         if hvd.rank() == 0:
-            print(f'Epoch {epoch:3d}/{args.epochs:d}', end=', ')
+            print(f'Eph: {epoch:03d}/{args.epochs+1:d}', end=', ')
+            epoch_time = time()
         
         if args.use_mixed_precision:
             pass
@@ -297,11 +309,11 @@ if __name__ == '__main__':
             best_acc = epoch_acc
         # save_checkpoint(epoch)
         if hvd.rank() == 0:
-            print()
+            print(f'Time: {(time() - epoch_time) % 60:02.04f}')
     
     if hvd.rank() == 0:
-        time_elapsed = time.time() - time_start_train
-        print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+        train_elapsed = time.time() - train_time
+        print(f'Training complete in {train_elapsed // 60:02.0f}m {train_elapsed % 60:02.04f}s')
         print(f'Best val Acc: {best_acc:4f}\n\n')
 
 
