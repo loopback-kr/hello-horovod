@@ -36,7 +36,7 @@ parser.add_argument('--val_batch_size', type=int,                   default=1000
 # Horovod settings
 parser.add_argument('--use_hvd', type=bool,                         default=True, help='limit # of CPU threads to be used per worker')
 parser.add_argument(    '--cpu_threads_limit', type=int,            default=1, help='limit # of CPU threads to be used per worker')
-parser.add_argument(    '--num_workers', type=int,                  default=1, help='')
+parser.add_argument(    '--loader_workers', type=int,               default=5, help='')
 parser.add_argument(    '--batches_per_allreduce', type=int,        default=1, help='number of batches processed locally before '
                                                                         'executing allreduce across workers; it multiplies '
                                                                         'total batch size.')
@@ -83,7 +83,7 @@ def validate():
 
     # print('{} Loss: {:.4f} Acc: {:.4f}'.format('val', epoch_loss, epoch_acc), end='')
 
-    return epoch_acc
+    return val_acc
     # deep copy the model
     # if epoch_acc > best_acc:
     #     best_acc = epoch_acc
@@ -211,7 +211,7 @@ if __name__ == '__main__':
     # Load datasets
     dsets = load_dataset(args.dataset)
     if args.use_hvd:
-        kwargs = {'num_workers': args.num_workers, 'pin_memory': True}
+        kwargs = {'num_workers': args.loader_workers, 'pin_memory': True}
         # When supported, use 'forkserver' to spawn dataloader workers instead of 'fork' to prevent
         # issues with Infiniband implementations that are not fork-safe
         if (kwargs.get('num_workers', 0) > 0 and hasattr(mp, '_supports_context') and mp._supports_context and 'forkserver' in mp.get_all_start_methods()):
@@ -221,7 +221,7 @@ if __name__ == '__main__':
         loader = {x: torch.utils.data.DataLoader(dsets[x], batch_size=size, sampler=samplers[x], **kwargs) for x, size in zip(['train', 'val'], [args.train_batch_size, args.val_batch_size])}
     else:
         loader = {x: torch.utils.data.DataLoader(dsets[x], batch_size=size) for x, size in zip(['train', 'val'], [args.train_batch_size, args.val_batch_size])}
-
+    
     dataset_sizes = {x: len(dsets[x]) for x in ['train', 'val']}
     class_names = dsets['train'].classes # To define the number of outputs in FC-layers
     
@@ -284,7 +284,7 @@ if __name__ == '__main__':
     train_time = time()
     for epoch in range(1, args.epochs+1):
         if hvd.rank() == 0:
-            print(f'Eph: {epoch:03d}/{args.epochs+1:d}', end=', ')
+            print(f'Eph: {epoch:3d}/{args.epochs:d}', end=', ')
             epoch_time = time()
         
         if args.use_mixed_precision:
@@ -312,7 +312,7 @@ if __name__ == '__main__':
             print(f'Time: {(time() - epoch_time) % 60:02.04f}')
     
     if hvd.rank() == 0:
-        train_elapsed = time.time() - train_time
+        train_elapsed = time() - train_time
         print(f'Training complete in {train_elapsed // 60:02.0f}m {train_elapsed % 60:02.04f}s')
         print(f'Best val Acc: {best_acc:4f}\n\n')
 
