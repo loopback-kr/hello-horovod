@@ -1,14 +1,12 @@
 from __future__ import print_function, division
-import argparse, numpy as np, os, copy, random
+import argparse, numpy as np, random
 from time import time
 # import PyTorch and dependencies
-import torch
-import torch.nn as nn
-import torch.optim as optim
+import torch, torch.nn as nn, torch.optim as optim
+import torch.nn.functional as F
 #import matplotlib.pyplot as plt
 # import horovod for PyTorch and dependencies
-import horovod.torch as hvd, distutils.version
-import torch.multiprocessing as mp
+import horovod.torch as hvd, distutils.version, torch.multiprocessing as mp
 # import utility
 from utility.preloader import load_dataset, get_model
 
@@ -46,8 +44,7 @@ parser.add_argument('--use_mixed_precision', action='store_true',   default=Fals
 
 
 def metric_average(val, name):
-    tensor = torch.tensor(val)
-    avg_tensor = hvd.allreduce(tensor, name=name)
+    avg_tensor = hvd.allreduce(torch.tensor(val), name=name)
     return avg_tensor.item()
 
 def validate():
@@ -116,7 +113,7 @@ def train(epoch, calc_train_metric=True):
             # this worker's partition.
         # print('train Loss: {:.4f}'.format(loss.item()), end=', ')
     
-    # exp_lr_scheduler.step()
+    exp_lr_scheduler.step()
 
     if calc_train_metric:
         # Horovod: use test_sampler to determine the number of examples in
@@ -188,7 +185,6 @@ if __name__ == '__main__':
         hvd.init() # initialize horovod
         torch.cuda.set_device(hvd.local_rank()) # pin GPU to local rank.
         torch.set_num_threads(args.cpu_threads_limit) # limit # of CPU threads to be used per worker.
-        allreduce_batch_size = args.train_batch_size * args.batches_per_allreduce
     else:
         if args.use_mixed_precision:
             raise ValueError('Mixed precision is only supported with cuda enabled.')
@@ -204,21 +200,24 @@ if __name__ == '__main__':
         if args.dev == 'cuda':
             torch.cuda.manual_seed(args.randomness_seed)
             torch.cuda.manual_seed_all(args.randomness_seed)
-            torch.backends.cudnn.benchmark = False
+            # torch.backends.cudnn.benchmark = False
             torch.backends.cudnn.deterministic = args.cudnn_deterministic
-    
+    torch.backends.cudnn.benchmark = True
+
     # Load datasets
     dsets = load_dataset(args.dataset)
     if args.use_hvd:
+        allreduce_batch_size = args.train_batch_size * args.batches_per_allreduce
+        
         kwargs = {'num_workers': args.loader_workers, 'pin_memory': True}
         # When supported, use 'forkserver' to spawn dataloader workers instead of 'fork' to prevent
         # issues with Infiniband implementations that are not fork-safe
         if (kwargs.get('num_workers', 0) > 0 and hasattr(mp, '_supports_context') and mp._supports_context and 'forkserver' in mp.get_all_start_methods()):
             kwargs['multiprocessing_context'] = 'forkserver'
+        
         # Horovod: use DistributedSampler to partition the training, test data among workers
         samplers = {x: torch.utils.data.distributed.DistributedSampler(dsets[x], num_replicas=hvd.size(), rank=hvd.rank()) for x in ['train', 'val']}
-        loader = {x: torch.utils.data.DataLoader(dsets[x], batch_size=size, sampler=samplers[x], **kwargs) for x, size in zip(['train', 'val'], [args.train_batch_size, args.val_batch_size])}
-        # TODO testloader도 구현되는 ㄱ게 맞는지 확인
+        loader = {x: torch.utils.data.DataLoader(dsets[x], batch_size=size, sampler=samplers[x], **kwargs) for x, size in zip(['train', 'val'], [allreduce_batch_size, args.val_batch_size])}
     else:
         loader = {x: torch.utils.data.DataLoader(dsets[x], batch_size=size) for x, size in zip(['train', 'val'], [args.train_batch_size, args.val_batch_size])}
     
@@ -230,6 +229,7 @@ if __name__ == '__main__':
     if args.dev == 'cuda':
         model = model.to(args.device) # horovod: move model to GPU
 
+    # Define optimizer
     lr_scaler = 1
     if args.use_hvd:
         # By default, Adasum doesn't need scaling up learning rate.
@@ -246,7 +246,7 @@ if __name__ == '__main__':
     optimizer = optim.SGD(model.parameters(), lr=(args.base_lr * lr_scaler), momentum=args.momentum, weight_decay=args.weight_decay)
 
     # Decay LR by a factor of 0.1 every 7 epochs
-    # exp_lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
+    exp_lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=7, gamma=0.1)
 
     # Horovod: wrap optimizer with DistributedOptimizer.
     # The distributed optimizer delegates gradient computation to the original optimizer,
