@@ -55,12 +55,10 @@ def validate():
         if args.dev == 'cuda':
             inputs, labels = inputs.cuda(), labels.cuda()
         outputs = model(inputs)
-        # sum up batch loss
-        # test_loss += F.nll_loss(outputs, labels, size_average=False).item()
-        val_loss += nn.CrossEntropyLoss(reduction='sum')(outputs, labels).item()
+        val_loss += F.cross_entropy(outputs, labels).item()
         # get the index of the max log-probability
         pred = outputs.data.max(1, keepdim=True)[1]
-        val_acc += pred.eq(labels.data.view_as(pred)).cpu().float().sum()
+        val_acc += pred.eq(labels.data.view_as(pred)).cpu().float().sum() # mean() VS sum()
 
     # Horovod: use test_sampler to determine the number of examples in
     # this worker's partition.
@@ -99,15 +97,14 @@ def train(epoch, calc_train_metric=True):
         optimizer.zero_grad()
         # with torch.set_grad_enabled(True):
         outputs = model(inputs)
+
+        loss = F.cross_entropy(outputs, labels)
         _, preds = torch.max(outputs, 1)
-        # loss = nn.CrossEntropyLoss(reduction='mean')(outputs, labels)
-        import torch.nn.functional as F
-        loss = F.nll_loss(outputs, labels)
-        train_loss += loss
-        train_acc += torch.sum(preds == labels.data)
+        # pred = outputs.max(1, keepdim=True)[1]
         loss.backward()
         optimizer.step()
-        
+        train_loss += loss.item()
+        train_acc += torch.sum(preds == labels.data)
         # if batch_idx % args.log_interval == 0:
             # Horovod: use train_sampler to determine the number of examples in
             # this worker's partition.
