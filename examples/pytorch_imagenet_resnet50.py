@@ -15,9 +15,9 @@ from tqdm import tqdm
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Example',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--train-dir', default=os.path.expanduser('~/imagenet/train'),
+parser.add_argument('--train-dir', default=os.path.expanduser('datasets/RSNA_COVID_512/train'),
                     help='path to training data')
-parser.add_argument('--val-dir', default=os.path.expanduser('~/imagenet/validation'),
+parser.add_argument('--val-dir', default=os.path.expanduser('datasets/RSNA_COVID_512/val'),
                     help='path to validation data')
 parser.add_argument('--log-dir', default='./logs',
                     help='tensorboard log directory')
@@ -247,7 +247,11 @@ if __name__ == '__main__':
 
 
     # Set up standard ResNet-50 model.
-    model = models.resnet50()
+    model = models.resnet50(pretrained=True)
+    num_ftrs = model.fc.in_features
+    import torch.nn as nn
+    # Here the size of each output can be generalized to nn.Linear(num_ftrs, len(class_names)).
+    model.fc = nn.Linear(num_ftrs, 4)
 
     # By default, Adasum doesn't need scaling up learning rate.
     # For sum/average with gradient Accumulation: scale learning rate by batches_per_allreduce

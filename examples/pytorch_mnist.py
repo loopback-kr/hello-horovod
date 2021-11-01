@@ -25,7 +25,7 @@ parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
                     help='SGD momentum (default: 0.5)')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
-parser.add_argument('--seed', type=int, default=42, metavar='S',
+parser.add_argument('--seed', type=int, default=0, metavar='S',
                     help='random seed (default: 42)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
@@ -39,6 +39,7 @@ parser.add_argument('--gradient-predivide-factor', type=float, default=1.0,
                     help='apply gradient predivide factor in optimizer (default: 1.0)')
 parser.add_argument('--data-dir',
                     help='location of the training dataset in the local filesystem (will be downloaded if needed)')
+parser.add_argument('--loader_workers', type=int, default=4)
 
 
 class Net(nn.Module):
@@ -100,12 +101,12 @@ def train(epoch):
         loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
-        if batch_idx % args.log_interval == 0:
-            # Horovod: use train_sampler to determine the number of examples in
-            # this worker's partition.
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_sampler),
-                100. * batch_idx / len(train_loader), loss.item()))
+        # if batch_idx % args.log_interval == 0:
+        #     # Horovod: use train_sampler to determine the number of examples in
+        #     # this worker's partition.
+        #     print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+        #         epoch, batch_idx * len(data), len(train_sampler),
+        #         100. * batch_idx / len(train_loader), loss.item()))
 
 
 def metric_average(val, name):
@@ -139,22 +140,33 @@ def test():
 
     # Horovod: print output only on first rank.
     if hvd.rank() == 0:
-        print('\nTest set: Average loss: {:.4f}, Accuracy: {:.2f}%\n'.format(
-            test_loss, 100. * test_accuracy))
+        print(f'Loss: {test_loss:.4f}, Acc: {test_accuracy:.4f}', end=', ')
 
 
 if __name__ == '__main__':
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()
 
+    # torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    import numpy as np
+    np.random.seed(args.seed)
+    import random
+    random.seed(args.seed)
+
     # Horovod: initialize library.
     hvd.init()
     torch.manual_seed(args.seed)
+
+    # torch.cuda.manual_seed(args.seed)
+    
 
     if args.cuda:
         # Horovod: pin GPU to local rank.
         torch.cuda.set_device(hvd.local_rank())
         torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed) # if use multi-GPU
     else:
         if args.use_mixed_precision:
             raise ValueError("Mixed precision is only supported with cuda enabled.")
@@ -167,7 +179,7 @@ if __name__ == '__main__':
     # Horovod: limit # of CPU threads to be used per worker.
     torch.set_num_threads(1)
 
-    kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+    kwargs = {'num_workers': args.loader_workers, 'pin_memory': True} if args.cuda else {}
     # When supported, use 'forkserver' to spawn dataloader workers instead of 'fork' to prevent
     # issues with Infiniband implementations that are not fork-safe
     if (kwargs.get('num_workers', 0) > 0 and hasattr(mp, '_supports_context') and
@@ -233,11 +245,21 @@ if __name__ == '__main__':
     if args.use_mixed_precision:
         # Initialize scaler in global scale
         scaler = torch.cuda.amp.GradScaler()
-
+    from time import time
+    train_time = time()
     for epoch in range(1, args.epochs + 1):
+        if hvd.rank() == 0:
+            print(f'Eph: {epoch:03d}', end=', ')
+        epoch_time = time()
         if args.use_mixed_precision:
             train_mixed_precision(epoch, scaler)
         else:
             train(epoch)
         # Keep test in full precision since computation is relatively light.
         test()
+        epoch_elapsed = time() - epoch_time
+        if hvd.rank() == 0:
+            print(f'Time: {epoch_elapsed % 60:02.04f}')
+    if hvd.rank() == 0:
+        train_elapsed = time() - train_time
+        print(f'Training complete in {train_elapsed // 60:02.0f}m {train_elapsed % 60:02.04f}s')
