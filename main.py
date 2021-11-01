@@ -13,8 +13,8 @@ from utility.preloader import load_dataset, get_model
 
 parser = argparse.ArgumentParser(description='PyTorch Horovod demo')
 # Base settings
-parser.add_argument('--model', type=str,                            default='MNIST', help='')
-parser.add_argument('--dataset', type=str,                          default='MNIST', help='')
+parser.add_argument('--model', type=str,                            default='resnet18_fine', help='{{MNIST|resnet18_fine}}')
+parser.add_argument('--dataset', type=str,                          default='RSNA_COVID_512', help='{{MNIST|hymenoptera|RSNA_COVID_512|RSNA_COVID_1024}}')
 parser.add_argument('--dev', type=str,                              default='cuda', help='CUDA training')
 parser.add_argument(    '--dev_ids', type=str,                      default='0', help='')
 parser.add_argument('--log_interval', type=int,                     default=1, metavar='N', help='how many batches to wait before logging training status')
@@ -22,15 +22,15 @@ parser.add_argument('--restrict_randomness', type=bool,             default=True
 parser.add_argument(    '--randomness_seed', type=int,              default=0, metavar='N', help='')
 parser.add_argument(    '--cudnn_deterministic', type=bool,         default=False, help='')
 # Training settings
-parser.add_argument('--epochs', type=int,                           default=10, metavar='N', help='number of epochs to train (default: 10)')
-parser.add_argument('--base_lr', type=float,                        default=0.01, help='learning rate for a single GPU')
-parser.add_argument('--momentum', type=float,                       default=0.5, metavar='M', help='SGD momentum (default: 0.5)')
+parser.add_argument('--epochs', type=int,                           default=25, metavar='N', help='number of epochs to train (default: 10)')
+parser.add_argument('--base_lr', type=float,                        default=0.001, help='learning rate for a single GPU')
+parser.add_argument('--momentum', type=float,                       default=0.9, metavar='M', help='SGD momentum (default: 0.5)')
 parser.add_argument('--train_batch_size', type=int,                 default=64, metavar='N', help='input batch size for training')
 parser.add_argument('--weight_decay', type=float,                   default=0.0, help='weight decay')
 parser.add_argument('--use_adasum', action='store_true',            default=False, help='use adasum algorithm to do reduction')
-parser.add_argument('--calc_train_metric', type=bool,               default=False, help='')
+parser.add_argument('--calc_train_metric', type=bool,               default=True, help='')
 # Testing settings
-parser.add_argument('--val_batch_size', type=int,                   default=1000, metavar='N', help='input batch size for testing valiation')
+parser.add_argument('--val_batch_size', type=int,                   default=64, metavar='N', help='input batch size for testing valiation')
 # Horovod settings
 parser.add_argument('--use_hvd', type=bool,                         default=True, help='limit # of CPU threads to be used per worker')
 parser.add_argument(    '--cpu_threads_limit', type=int,            default=1, help='limit # of CPU threads to be used per worker')
