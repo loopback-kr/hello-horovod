@@ -11,6 +11,7 @@ import horovod.torch as hvd
 import os
 import math
 from tqdm import tqdm
+from time import time
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Example',
@@ -57,21 +58,29 @@ parser.add_argument('--seed', type=int, default=42,
 
 
 def train(epoch):
+    time_init = time()
     model.train()
     train_sampler.set_epoch(epoch)
     train_loss = Metric('train_loss')
     train_accuracy = Metric('train_accuracy')
+    print(f'time_init: {time()-time_init:.10f}')
 
     with tqdm(total=len(train_loader),
               desc='Train Epoch     #{}'.format(epoch + 1),
               disable=not verbose) as t:
         for batch_idx, (data, target) in enumerate(train_loader):
+            time_batch = time()
             adjust_learning_rate(epoch, batch_idx)
-
+            print(f'time_batch: {time()-time_batch:.10f}')
+            time_cuda = time()
             if args.cuda:
                 data, target = data.cuda(), target.cuda()
+            print(f'time_cuda: {time()-time_cuda:.10f}')
+            time_grad = time()
             optimizer.zero_grad()
+            print(f'time_grad: {time()-time_grad:.10f}')
             # Split data into sub-batches of size batch_size
+            time_subbatch = time()
             for i in range(0, len(data), args.batch_size):
                 data_batch = data[i:i + args.batch_size]
                 target_batch = target[i:i + args.batch_size]
@@ -82,11 +91,16 @@ def train(epoch):
                 # Average gradients among sub-batches
                 loss.div_(math.ceil(float(len(data)) / args.batch_size))
                 loss.backward()
+            print(f'time_subbatch: {time()-time_subbatch:.10f}')
             # Gradient is applied across all ranks
+            time_step = time()
             optimizer.step()
+            print(f'time_step: {time()-time_step:.10f}')
+            time_update = time()
             t.set_postfix({'loss': train_loss.avg.item(),
                            'accuracy': 100. * train_accuracy.avg.item()})
             t.update(1)
+            print(f'time_update: {time()-time_update:.10f}')
 
     if log_writer:
         log_writer.add_scalar('train/loss', train_loss.avg, epoch)
@@ -205,7 +219,7 @@ if __name__ == '__main__':
     log_writer = SummaryWriter(args.log_dir) if hvd.rank() == 0 else None
 
     # Horovod: limit # of CPU threads to be used per worker.
-    torch.set_num_threads(4)
+    torch.set_num_threads(1)
 
     kwargs = {'num_workers': 4, 'pin_memory': True} if args.cuda else {}
     # When supported, use 'forkserver' to spawn dataloader workers instead of 'fork' to prevent
@@ -296,4 +310,4 @@ if __name__ == '__main__':
     for epoch in range(resume_from_epoch, args.epochs):
         train(epoch)
         validate(epoch)
-        save_checkpoint(epoch)
+        # save_checkpoint(epoch)
